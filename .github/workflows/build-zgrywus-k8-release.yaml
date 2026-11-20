@@ -1,0 +1,103 @@
+name: Build Zgrywus K8 from official rusEFI release
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: zgrywus-k8-upstream-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BOARD_PATH: firmware/config/boards/zgrywus-k8
+    steps:
+      - name: Find latest stable release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          release=$(gh api repos/rusefi/rusefi/releases/latest)
+          tag=$(jq -er '.tag_name | select(length > 0)' <<< "$release")
+          id=$(jq -er '.id' <<< "$release")
+          git check-ref-format "refs/tags/$tag"
+          artifact="zgrywus-k8-release-$id"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+
+          if [[ "$EVENT_NAME" == schedule ]]; then
+            artifacts=$(gh api --method GET --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts" -f name="$artifact")
+            if jq -es --arg name "$artifact" 'any(.[].artifacts[]; .name == $name and (.expired | not))' <<< "$artifacts"; then
+              echo "An artifact for $tag already exists."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out K8 port
+        if: steps.upstream.outputs.build == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check out official release
+        if: steps.upstream.outputs.build == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: rusefi/rusefi
+          ref: refs/tags/${{ steps.upstream.outputs.tag }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Install Java and Gradle
+        if: steps.upstream.outputs.build == 'true'
+        uses: ./.github/actions/setup-java
+
+      - name: Install Arm GNU Toolchain
+        if: steps.upstream.outputs.build == 'true'
+        uses: carlosperate/arm-none-eabi-gcc-action@v1.14.1
+        with:
+          release: '14.2.Rel1'
+
+      - name: Install build tools
+        if: steps.upstream.outputs.build == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dosfstools mtools p7zip-full xxd zip
+
+      - name: Apply K8 board and build
+        if: steps.upstream.outputs.build == 'true'
+        env:
+          AUTOMATION_REF: ${{ steps.upstream.outputs.tag }}
+        run: |
+          git archive HEAD "$BOARD_PATH" | tar -x -C upstream
+          cd upstream
+          git submodule update --init --depth 1 firmware/ChibiOS firmware/ChibiOS-Contrib firmware/libfirmware firmware/ext/lua firmware/ext/magic_enum firmware/ext/uzlib firmware/controllers/lua/luaaa firmware/controllers/can/wideband_firmware
+          bash "$BOARD_PATH/compile.sh"
+
+          mkdir -p ../k8-artifact
+          cp firmware/build/rusefi.bin firmware/build/rusefi.hex firmware/tunerstudio/generated/rusefi_zgrywus-k8.ini ../k8-artifact/
+          printf 'upstream_tag=%s\nupstream_commit=%s\nport_commit=%s\n' \
+            "$AUTOMATION_REF" "$(git rev-parse HEAD)" "$GITHUB_SHA" > ../k8-artifact/build-info.txt
+
+      - name: Upload K8 firmware and TunerStudio definition
+        if: steps.upstream.outputs.build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.upstream.outputs.artifact }}
+          path: k8-artifact/
+          if-no-files-found: error
