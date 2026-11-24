@@ -13,7 +13,7 @@
 enum class ClearReason : uint8_t {
 	None, // 0
 	Fatal, // 1
-	Settings, // 2
+	Settings, // 2 - "setting disabled": the user turned injection or ignition off in the tune, not "the tune is bad"
 	HardLimit, // 3
 	EtbJammedRevLimit, // 4 means 1500 RPM limit in ETB jam was detected
 	BoostCut, // 5
@@ -143,6 +143,10 @@ private:
 	Clearable m_transientAllowIgnition = true;
 
 	bool m_hadOilPressureAfterStart = false;
+	// The after start oil pressure check has been made (once, at the timeout)
+	bool m_checkedOilPressureAfterStart = false;
+	// ...and it failed: cut fuel until the engine stops
+	bool m_noOilPressureAfterStart = false;
 
 	// Ignition switch state
 	bool m_ignitionOn = false;

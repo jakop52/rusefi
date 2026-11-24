@@ -392,13 +392,11 @@ void handleVvtCamSignal(TriggerValue front, efitick_t nowNt, int index) {
 		return;
 	}
 
-	// If the main trigger is not synchronized, don't decode VVT yet
-	if (!tc->triggerState.getShaftSynchronized()) {
-		return;
-	}
-
 	TriggerDecoderBase& vvtDecoder = tc->vvtState[bankIndex][camIndex];
 
+	// The cam decoder doesn't need the crank, so feed it every edge, including while the crank is
+	// unsynchronized (cranking, or resyncing after a crank trigger error). If it missed edges it
+	// would lose its own sync, or worse, find a false sync point and give the crank the wrong phase.
 	if (isVvtWithRealDecoder) {
 		vvtDecoder.decodeTriggerEvent(
 				"vvt",
@@ -407,6 +405,11 @@ void handleVvtCamSignal(TriggerValue front, efitick_t nowNt, int index) {
 			tc->vvtTriggerConfiguration[camIndex],
 			front == TriggerValue::RISE ? SHAFT_PRIMARY_RISING : SHAFT_PRIMARY_FALLING, nowNt);
 		vvtDecoder.vvtToothDurations0 = (uint32_t)NT2US(vvtDecoder.toothDurations[0]);
+	}
+
+	// Everything from here on compares the cam against crank position, which needs crank sync
+	if (!tc->triggerState.getShaftSynchronized()) {
+		return;
 	}
 
     // here we count all cams together
@@ -1370,6 +1373,11 @@ void TriggerCentral::applyShapesConfiguration() {
 
   applyCamGapOverride();
 
+	bool primaryNeedsDisambiguation = engine->triggerCentral.triggerShape.needsDisambiguation();
+
+	// If we already don't need disambiguation, we can expect it (immediately)
+	bool expectDisambiguation = !primaryNeedsDisambiguation;
+
 	for (int camIndex = 0; camIndex < CAMS_PER_BANK; camIndex++) {
 		// todo: should 'vvtWithRealDecoder' be used here?
 		if (engineConfiguration->vvtMode[camIndex] != VVT_INACTIVE) {
@@ -1379,11 +1387,21 @@ void TriggerCentral::applyShapesConfiguration() {
 				vvtTriggerConfiguration[camIndex],
 				initState
 			);
+
+			for (int bankIndex = 0; bankIndex < BANKS_COUNT; bankIndex++) {
+				int inputIndex = bankIndex * CAMS_PER_BANK + camIndex;
+
+				// [tag:injection_phase_sync] With a cam input, engine phase will be known once
+				// the cam decodes. With none we run crank-only and must not wait for it.
+				if (isBrainPinValid(engineConfiguration->camInputs[inputIndex])) {
+					expectDisambiguation = true;
+				}
+			}
 		}
 	}
 
 	// This is not the right place for this, but further refactoring has to happen before it can get moved.
-	triggerState.setNeedsDisambiguation(engine->triggerCentral.triggerShape.needsDisambiguation());
+	triggerState.setNeedsDisambiguation(primaryNeedsDisambiguation, expectDisambiguation);
 
 }
 

@@ -864,3 +864,87 @@ TEST(limp, recoveredCutDoesNotReportAgain) {
 	EXPECT_EQ(getTimeNowNt(), warning->LastTriggered.get());
 	EXPECT_EQ(1, eth.getWarningCounter());
 }
+
+// "Minimum oil pressure after start" only cuts fuel when a working sensor shows no pressure. A
+// failed sensor (for example a broken wire) used to cut fuel five seconds after every start; it
+// is reported by its own fault code instead.
+TEST(limp, failedOilPressureSensorDoesNotCutFuelAfterStart) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	engineConfiguration->minOilPressureAfterStart = 100;
+	engineConfiguration->enableOilPressureProtect = false;
+	engine->rpmCalculator.setRpmValue(1000);
+	ASSERT_TRUE(engine->rpmCalculator.isRunning());
+
+	// broken wire: the sensor exists but has no valid reading
+	Sensor::setInvalidMockValue(SensorType::OilPressure);
+	ASSERT_TRUE(Sensor::hasSensor(SensorType::OilPressure));
+	ASSERT_FALSE(Sensor::get(SensorType::OilPressure).Valid);
+
+	LimpManager dut;
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+
+	advanceTimeUs(6'000'000);
+	ASSERT_GT(engine->rpmCalculator.getSecondsSinceEngineStart(getTimeNowNt()), 5);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+
+	// the decision is made once, at the timeout: a sensor which comes back reading low later
+	// does not trip the after-start check
+	Sensor::setMockValue(SensorType::OilPressure, 50);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+}
+
+// The sensor reads low while pressure builds and then fails before the timeout: the low readings
+// seen before the failure do not count against the engine.
+TEST(limp, oilPressureSensorFailingDuringAfterStartWindowDoesNotCutFuel) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	engineConfiguration->minOilPressureAfterStart = 100;
+	engineConfiguration->enableOilPressureProtect = false;
+	engine->rpmCalculator.setRpmValue(1000);
+
+	LimpManager dut;
+	Sensor::setMockValue(SensorType::OilPressure, 50);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+
+	advanceTimeUs(3'000'000);
+	Sensor::setInvalidMockValue(SensorType::OilPressure);
+	dut.updateState(1000, getTimeNowNt());
+
+	advanceTimeUs(3'000'000);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+}
+
+// A working sensor which never showed pressure cuts fuel at the timeout, and the cut stays until
+// the engine stops, whatever the sensor does afterwards.
+TEST(limp, noOilPressureAfterStartCutStaysUntilEngineStops) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	engineConfiguration->minOilPressureAfterStart = 100;
+	engineConfiguration->enableOilPressureProtect = false;
+	engine->rpmCalculator.setRpmValue(1000);
+
+	LimpManager dut;
+	Sensor::setMockValue(SensorType::OilPressure, 50);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_TRUE(dut.allowInjection());
+
+	advanceTimeUs(6'000'000);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_EQ(ClearReason::OilPressure, dut.allowInjection().reason);
+
+	// pressure arriving late, or the sensor failing, does not lift the cut
+	Sensor::setMockValue(SensorType::OilPressure, 200);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_EQ(ClearReason::OilPressure, dut.allowInjection().reason);
+	Sensor::setInvalidMockValue(SensorType::OilPressure);
+	dut.updateState(1000, getTimeNowNt());
+	EXPECT_EQ(ClearReason::OilPressure, dut.allowInjection().reason);
+
+	// engine stops: the check starts over
+	engine->rpmCalculator.setRpmValue(0);
+	dut.updateState(0, getTimeNowNt());
+	EXPECT_NE(ClearReason::OilPressure, dut.allowInjection().reason);
+}

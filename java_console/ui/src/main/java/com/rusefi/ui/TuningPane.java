@@ -19,6 +19,8 @@ import com.rusefi.ui.widgets.tune.CalibrationDialogWidget;
 import com.rusefi.ui.widgets.tune.CalibrationPanelWorkspace;
 import com.rusefi.ui.widgets.tune.IndicatorStrip;
 import com.rusefi.ui.widgets.tune.PinoutLink;
+import com.rusefi.ui.widgets.tune.RestorePointsWindow;
+import com.rusefi.ui.basic.LoadTuneHelper;
 import com.rusefi.ui.widgets.tune.MainMenuTreeWidget;
 import com.rusefi.ui.widgets.tune.SettingHelpCard;
 import com.rusefi.ui.widgets.tune.TuningStyle;
@@ -55,6 +57,13 @@ public class TuningPane {
     private final UIContext uiContext;
     private final MainMenuTreeWidget left;
     private final TuningToolbarWidget toolbar;
+    private RestorePointsWindow restorePointsWindow;
+    private final Action restorePointsAction = new AbstractAction(LoadTuneHelper.RESTORE_POINTS_TEXT) {
+        @Override
+        public void actionPerformed(java.awt.event.ActionEvent e) {
+            openRestorePoints();
+        }
+    };
     private final TuneOperationStatusPanel loadStatusCard;
     private final CalibrationDialogWidget right;
     private final CalibrationPanelWorkspace workspace;
@@ -131,6 +140,9 @@ public class TuningPane {
             }
         );
 
+        // [tag:restore_points] the Burn note's link
+        toolbar.setShowRestorePoints(this::openRestorePoints);
+
         if (config != null) {
             gaugeStrip = new TextGaugeStrip(uiContext, config.getChild("gauge_strip"));
         }
@@ -182,6 +194,8 @@ public class TuningPane {
 
         // The "Show on connector" button on a pin-enum combo fires the current value upward.
         workspace.setOnShowInPinout(PinoutLink.forwarding(() -> navigateToPinout));
+        // [tag:settings_summary_line] a setting named in a page's summary line opens where it is edited
+        workspace.setSettingPageFinder(left::findPageWithField);
 
         // [tag:unburned_marks] settings that differ from the last burned (or loaded) tune are marked
         workspace.setBurnedImage(toolbar::getBaselineImage);
@@ -311,6 +325,7 @@ public class TuningPane {
         northPanel.setLayout(new BoxLayout(northPanel, BoxLayout.Y_AXIS));
         TuningStyle.styleBar(northPanel);
         northPanel.setBorder(BorderFactory.createCompoundBorder(northPanel.getBorder(),
+            // [tag:tune_controls_position] the 4 px left inset is part of TuningToolbarWidget.CONTROLS_LEFT
             BorderFactory.createEmptyBorder(0, 4, 6, 4)));
         northPanel.add(withHelpChoices(toolbar.getPanel(), config, workspace::rebuildViews));
         indicatorStrip = new IndicatorStrip(() -> uiContext.iniFileState.getIniFileModel(),
@@ -380,6 +395,10 @@ public class TuningPane {
     /** Keys of the menu pages marked as not burned. */
     Set<String> getUnburnedPageKeysForTests() {
         return left.getUnburnedPageKeys();
+    }
+
+    boolean isMenuPageDisabledForTests(String subMenuKey) {
+        return left.isPageDisabled(subMenuKey);
     }
 
     public void destroy() {
@@ -561,6 +580,64 @@ public class TuningPane {
         return toolbar.getSaveTuneAsAction();
     }
 
+    public Action getCreateRestorePointAction() {
+        return toolbar.getCreateRestorePointAction();
+    }
+
+    /** File › Restore Points… [tag:restore_points] */
+    public Action getRestorePointsAction() {
+        return restorePointsAction;
+    }
+
+    /** Opens the Restore Points window, or brings the open one to the front. */
+    void openRestorePoints() {
+        if (restorePointsWindow != null && restorePointsWindow.isShowing()) {
+            restorePointsWindow.show();
+            return;
+        }
+        Window owner = SwingUtilities.getWindowAncestor(content);
+        if (owner == null) {
+            owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().getActiveWindow();
+        }
+        restorePointsWindow = new RestorePointsWindow(owner, toolbar.getRestorePointStore(),
+            () -> uiContext.iniFileState.getIniFileModel(), this::tuneToEdit, this::restoreTune,
+            toolbar.getCreateRestorePointAction());
+        restorePointsWindow.show();
+    }
+
+    /** The tune an edit applies to, as {@link #applyEdit} picks it. */
+    private ConfigurationImage tuneToEdit() {
+        ConfigurationImage current = sessionImage.get();
+        if (current == null) {
+            BinaryProtocol bp = uiContext.getBinaryProtocol();
+            current = bp != null ? bp.getControllerConfiguration() : null;
+        }
+        return current;
+    }
+
+    /** Puts a restore point's tune in place as one edit: undoable, unburned. */
+    boolean restoreTune(ConfigurationImage restored) {
+        boolean applied = applyEdit(image -> System.arraycopy(restored.getContent(), 0, image.getContent(), 0,
+            Math.min(restored.getSize(), image.getSize())));
+        if (applied) {
+            toolbar.showNote("Restore point put back as unburned changes");
+        }
+        return applied;
+    }
+
+    RestorePointsWindow getRestorePointsWindowForTests() {
+        return restorePointsWindow;
+    }
+
+    void setRestorePointStoreForTests(com.rusefi.util.RestorePointStore store) {
+        toolbar.setRestorePointStoreForTests(store);
+    }
+
+    /** Burn / Discard / Undo / Redo bound to this tune, for screens that open its settings windows. */
+    public JComponent createMirrorTuneControls() {
+        return toolbar.createMirrorControls();
+    }
+
     public void setErrorHandler(Consumer<String> errorHandler) {
         toolbar.setErrorHandler(errorHandler);
     }
@@ -643,6 +720,8 @@ public class TuningPane {
         toolbar.setBaselineImage(image.clone());
         // Remember which .ini these edits belong to so a different-signature ECU can migrate them.
         offlineIni = uiContext.iniFileState.getIniFileModel();
+        // Grey out the pages the loaded tune's INI menu conditions disable, as a connect does.
+        left.refreshExpressions(sessionImage.get());
         right.update(currentKey.get(), offlineIni, sessionImage.get());
         // Select the first dialog if none is selected yet
         if (dialogKey != null) {

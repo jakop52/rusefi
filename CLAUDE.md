@@ -75,7 +75,12 @@ when testing a shared ADC entry point. Host tests run the shared ADC subscriptio
 and filtering code with per-channel voltages supplied by `setMockAdcVoltage()`.
 Call `AdcSubscription::UpdateSubscribers()` explicitly to deliver samples;
 posting directly to a sensor cannot establish that it remains subscribed.
-`EngineTestHelper` clears subscriptions and mock voltages between tests. These
+`EngineTestHelper` clears subscriptions and mock voltages between tests. A sensor
+subscribed during `EngineTestHelper` construction can carry a zero input divider, so
+its samples read 0 V whatever the mock voltage; `SubscribeSensor` keeps an existing
+entry for an unchanged channel, so deinit the sensor, set
+`analogInputDividerCoefficient`, then init it again (see
+`TpsRawVoltageUnavailableWithInvalidCalibration`). These
 host tests do not establish hardware DMA acquisition or pin configuration.
 
 `TEST_ENGINE` enables MAF by default. In host tests, `init_maf.cpp`'s static
@@ -144,7 +149,9 @@ a learned trim is held (see `ShortTermFuelTrimBehavior`).
 For suspected test-order leaks, run the built binary directly from `unit_tests/`:
 `build/rusefi_test --gtest_shuffle --gtest_random_seed=31337 --gtest_repeat=3`.
 Record the failing iteration's seed and keep the same test selection when replaying;
-changing `--gtest_filter` changes the shuffled order. `test.sh` accepts a name filter,
+changing `--gtest_filter` changes the shuffled order. A full shuffled run rewrites the
+tracked `unit_tests/triggers.txt` in shuffled order; rerun the suite in normal order
+afterwards to restore it. `test.sh` accepts a name filter,
 not arbitrary GoogleTest flags. `EngineTestHelperBase` rewinds simulated time to zero,
 while `Sensor::resetRegistry()` only clears registry entries: a file-static
 `StoredValueSensor` can retain a previous value/timestamp and appear fresh after the
@@ -295,6 +302,7 @@ For detailed technical documentation intended for AI assistants, see:
 - [Hardware Quality Control & Direct I/O](docs/AI/hardware-quality-control.md) - Bench test subsystem, direct pin console commands, CAN QC protocol (0x770000) for factory test rigs, smart-driver diagnostics, trigger self-stimulation, ETB bench/autocal.
 - [HW QC Stim Rig](docs/AI/hw-qc-stim-rig.md) - Tester firmware in rusefi-hardware `digital-inputs/firmware`: test cycle, board detection, analog/counter expectations, output ordinals that must match `getBoardMeta*` and the QC harness.
 - [Configuration Storage](docs/AI/configuration_storage.md) - Storage manager, INT_FLASH/MFS/SD backends, double-copy settings write, extra flash pages piggybacked on the settings sector.
+- [OpenBLT Firmware Validation](docs/AI/openblt_firmware_validation.md) - Build-time CRC32/size header at `.vectors + 0x1C`, start-up `FlashVerifyChecksum()` and main-loop start decision, per-XCP-command NVM/flash callbacks while flashing, reset-loop counters, PROGRAM_RESET outcome.
 - [Firmware Flash Usage](docs/firmware-flash-usage.md) - uaefi121 measurements, feature-removal tradeoffs, flash-region accounting, and reproducible size comparisons.
 - [Hellen Board Mapping](docs/hellen-board-mapping.md) - Connector-pin -> hellen-one module -> STM32 pin mapping chain: meta headers (H144_/MM100_ namespaces), connector YAMLs + PinoutLogic codegen, resistor-based board ID; also how to recover the mapping from module schematic PDFs (pdftotext + Altium hidden-text artifacts).
 - [Connector Artwork](docs/imagegen.md) - Photo-to-drawing workflow and shared pin coordinates. Image generation does not reliably honor requested canvas dimensions or pixel positions; align the export and measure the final terminal centers before updating YAML.

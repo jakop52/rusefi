@@ -40,6 +40,9 @@ import javax.swing.Action;
 import org.jetbrains.annotations.NotNull;
 
 import javax.swing.*;
+import javax.swing.text.SimpleAttributeSet;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import java.awt.*;
 import java.awt.event.ActionListener;
 import java.awt.event.KeyEvent;
@@ -86,7 +89,11 @@ public class MainFrame {
         private static final int CARD_MARGIN = 56;
         private static final int CARD_PADDING = 32;
         private static final int CARD_MESSAGE_GAP = 24;
-        private final JTextArea message = new JTextArea();
+        /**
+         * Centred, wrapping message: the action buttons below are centred, so a left-aligned
+         * message would start at the window edge while the buttons sit in the middle.
+         */
+        private final JTextPane message = new JTextPane();
         private final JButton[] buttons;
         private final JPanel actionPanel;
         private final JPanel content;
@@ -101,9 +108,6 @@ public class MainFrame {
             message.setEditable(false);
             message.setOpaque(false);
             message.setFont(message.getFont().deriveFont(Font.BOLD, 32f));
-            message.setLineWrap(true);
-            message.setWrapStyleWord(true);
-            message.setColumns(50);
             setMessage(text, color);
 
             buttons = new JButton[actions.length];
@@ -162,7 +166,8 @@ public class MainFrame {
                 int cardWidth = Math.min(CARD_MAX_WIDTH, Math.max(0, getWidth() - 2 * margin));
                 // Reserve scrollbar width when measuring wrapped text, even if no scrollbar is needed.
                 int textWidth = Math.max(1, cardWidth - 2 * CARD_PADDING - 18);
-                message.setSize(textWidth, 0);
+                // A text component measures its wrapped height only when given a non-zero height.
+                message.setSize(textWidth, Short.MAX_VALUE);
                 int messageHeight = message.getPreferredSize().height;
                 int naturalHeight = 2 * CARD_PADDING + CARD_MESSAGE_GAP
                     + actionPanel.getPreferredSize().height + messageHeight;
@@ -212,6 +217,10 @@ public class MainFrame {
 
         void setMessage(String text, Color color) {
             message.setText(text);
+            StyledDocument document = message.getStyledDocument();
+            SimpleAttributeSet centered = new SimpleAttributeSet();
+            StyleConstants.setAlignment(centered, StyleConstants.ALIGN_CENTER);
+            document.setParagraphAttributes(0, document.getLength(), centered, false);
             message.setForeground(color);
             message.getAccessibleContext().setAccessibleName(text);
         }
@@ -265,6 +274,8 @@ public class MainFrame {
     private JMenuItem loadTuneItem;
     private JMenuItem saveTuneItem;
     private JMenuItem saveTuneAsItem;
+    private JMenuItem createRestorePointItem;
+    private JMenuItem restorePointsItem;
     private JMenuItem openLogItem;
     /**
      * user experience overview at Autoupdate.java
@@ -400,6 +411,18 @@ public class MainFrame {
         saveTuneAsItem.setMnemonic(KeyEvent.VK_A);
         saveTuneAsItem.setEnabled(false);
         fileMenu.add(saveTuneAsItem);
+
+        fileMenu.addSeparator();
+
+        // [tag:restore_points]
+        createRestorePointItem = new JMenuItem(LoadTuneHelper.CREATE_RESTORE_POINT_TEXT);
+        createRestorePointItem.setMnemonic(KeyEvent.VK_C);
+        createRestorePointItem.setEnabled(false);
+        fileMenu.add(createRestorePointItem);
+        restorePointsItem = new JMenuItem(LoadTuneHelper.RESTORE_POINTS_TEXT);
+        restorePointsItem.setMnemonic(KeyEvent.VK_R);
+        restorePointsItem.setEnabled(false);
+        fileMenu.add(restorePointsItem);
 
         fileMenu.addSeparator();
 
@@ -1233,6 +1256,23 @@ public class MainFrame {
         refreshFirmwareUpdateExclusion();
     }
 
+    /**
+     * File › Create Restore Point… and Restore Points…; disabled like the tune actions while firmware is being
+     * updated. [tag:restore_points]
+     */
+    public void setRestorePointActions(Action createAction, Action listAction) {
+        createRestorePointItem.setAction(createAction);
+        createRestorePointItem.setText(LoadTuneHelper.CREATE_RESTORE_POINT_TEXT);
+        createRestorePointItem.setMnemonic(KeyEvent.VK_C);
+        restorePointsItem.setAction(listAction);
+        restorePointsItem.setText(LoadTuneHelper.RESTORE_POINTS_TEXT);
+        restorePointsItem.setMnemonic(KeyEvent.VK_R);
+        restorePointsItem.setToolTipText("Go back to a tune kept before a Burn, Load Tune or firmware update");
+        createAction.addPropertyChangeListener(e -> refreshActionsAfterActionStateChange(e.getPropertyName()));
+        listAction.addPropertyChangeListener(e -> refreshActionsAfterActionStateChange(e.getPropertyName()));
+        refreshFirmwareUpdateExclusion();
+    }
+
     static Icon loadMenuIcon(String name) {
         ImageIcon icon = TuningIcons.load(name);
         if (icon == null) {
@@ -1274,6 +1314,12 @@ public class MainFrame {
         loadTuneItem.setEnabled(applicationActionsAllowed && loadAction != null && loadAction.isEnabled());
         saveTuneItem.setEnabled(applicationActionsAllowed && saveAction != null && saveAction.isEnabled());
         saveTuneAsItem.setEnabled(applicationActionsAllowed && saveAsAction != null && saveAsAction.isEnabled());
+        Action restorePointAction = createRestorePointItem.getAction();
+        createRestorePointItem.setEnabled(applicationActionsAllowed && restorePointAction != null
+            && restorePointAction.isEnabled());
+        Action restorePointsAction = restorePointsItem.getAction();
+        restorePointsItem.setEnabled(applicationActionsAllowed && restorePointsAction != null
+            && restorePointsAction.isEnabled());
         updateSoftwareItem.setEnabled(applicationActionsAllowed && updateSoftwareAvailable);
         // DevicePane disables these tabs while flashing; a tab opened now would miss that
         toolsMenu.setEnabled(applicationActionsAllowed);

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "spark_logic.h"
+#include "fuel_schedule.h"
 #include "harley.h"
 #include "fuel_math.h"
 #include "defaults.h"
@@ -86,3 +87,89 @@ TEST(OddFireRunningMode, hd) {
 	ASSERT_EQ(2, engine->getBailedOnDwellCount()) << "Please check if our dwell algorithm have really got better.";
 }
 #endif //FUEL_RPM_COUNT == 16
+
+// The odd-fire offset of a spark is the offset of the cylinder which is firing. It used to be
+// looked up by coil, so with one coil (distributor) every spark got the first cylinder's offset,
+// and with two coils or wasted spark only the first cylinders' offsets were used.
+static void checkOddFireOffsetFollowsFiringCylinder(ignition_mode_e ignitionMode) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	engineConfiguration->cylindersCount = 4;
+	engineConfiguration->firingOrder = FO_1_3_4_2;
+	engineConfiguration->ignitionMode = ignitionMode;
+	// cylinder 3 fires second, ten degrees late; cylinder 4 fires third, five degrees early
+	engineConfiguration->timing_offset_cylinder[2] = 10;
+	engineConfiguration->timing_offset_cylinder[3] = -5;
+
+	constexpr float rpm = 1000;
+	engine->rpmCalculator.setRpmValue(rpm);
+	engine->ignitionState.updateDwell(rpm, false);
+	setArrayValues(engine->engineState.timingAdvance, 0.0f);
+	initializeIgnitionActions();
+	ASSERT_TRUE(engine->ignitionEvents.isReady);
+
+	auto& elements = engine->ignitionEvents.elements;
+	EXPECT_NEAR(190, elements[1].sparkAngle - elements[0].sparkAngle, 0.01);
+	EXPECT_NEAR(355, elements[2].sparkAngle - elements[0].sparkAngle, 0.01);
+	EXPECT_NEAR(540, elements[3].sparkAngle - elements[0].sparkAngle, 0.01);
+}
+
+TEST(OddFire, offsetOfFiringCylinderWithSingleCoil) {
+	checkOddFireOffsetFollowsFiringCylinder(IM_ONE_COIL);
+}
+
+TEST(OddFire, offsetOfFiringCylinderWithTwoCoils) {
+	checkOddFireOffsetFollowsFiringCylinder(IM_TWO_COILS);
+}
+
+TEST(OddFire, offsetOfFiringCylinderWithIndividualCoils) {
+	checkOddFireOffsetFollowsFiringCylinder(IM_INDIVIDUAL_COILS);
+}
+
+// The injection angle of an event includes the odd-fire offset of its own cylinder. The event
+// used to learn its cylinder only after computing the angle, so the first schedule built after
+// start used the first cylinder's offset for every event, and in simultaneous and single point
+// modes, where the cylinder was taken to be the first one, every schedule did.
+static void checkInjectionOddFireOffset(injection_mode_e mode) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	EXPECT_CALL(*eth.mockAirmass, getAirmass(_, _))
+		.WillRepeatedly(Return(AirmassResult{0.1008f, 50.0f}));
+	setupSimpleTestEngineWithMafAndTT_ONE_trigger(&eth, mode);
+	engineConfiguration->firingOrder = FO_1_3_4_2;
+	// cylinder 3 is second in the firing order, cylinder 4 third
+	engineConfiguration->timing_offset_cylinder[2] = 10;
+	engineConfiguration->timing_offset_cylinder[3] = -5;
+
+	engine->rpmCalculator.setRpmValue(2000);
+	engine->periodicFastCallback();
+	ASSERT_EQ(mode, getCurrentInjectionMode());
+
+	FuelSchedule dut;
+	dut.addFuelEvents();
+	ASSERT_TRUE(dut.isReady);
+	// right from the first schedule
+	auto angleAfterFirst = [&](int index) {
+		float angle = dut.elements[index].injectionStartAngle - dut.elements[0].injectionStartAngle;
+		wrapAngle(angle, "test", ObdCode::CUSTOM_ERR_6555);
+		return angle;
+	};
+	EXPECT_NEAR(190, angleAfterFirst(1), 0.01);
+	EXPECT_NEAR(355, angleAfterFirst(2), 0.01);
+	EXPECT_NEAR(540, angleAfterFirst(3), 0.01);
+
+	// and rebuilding it with nothing changed moves nothing
+	float firstBuild = dut.elements[1].injectionStartAngle;
+	dut.addFuelEvents();
+	EXPECT_FLOAT_EQ(firstBuild, dut.elements[1].injectionStartAngle);
+}
+
+TEST(OddFire, injectionOffsetOfOwnCylinderSequential) {
+	checkInjectionOddFireOffset(IM_SEQUENTIAL);
+}
+
+TEST(OddFire, injectionOffsetOfOwnCylinderBatch) {
+	checkInjectionOddFireOffset(IM_BATCH);
+}
+
+TEST(OddFire, injectionOffsetOfOwnCylinderSimultaneous) {
+	checkInjectionOddFireOffset(IM_SIMULTANEOUS);
+}

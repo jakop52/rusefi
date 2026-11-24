@@ -235,6 +235,11 @@ public class MainMenuTreeWidget {
         return menuTree.getUnburnedPageKeys();
     }
 
+    /** Whether the page's enable/visible condition greys it out in the tree. */
+    public boolean isPageDisabled(String subMenuKey) {
+        return menuTree.isDisabled(new SubMenuModel(subMenuKey, subMenuKey));
+    }
+
     /** @see SettingsMenuTree#getUnlockHint */
     public String getUnlockHint(SubMenuModel subMenu) {
         return menuTree.getUnlockHint(subMenu);
@@ -261,6 +266,13 @@ public class MainMenuTreeWidget {
         }
         selectSubMenu(page.getKey());
         return true;
+    }
+
+    /** First page the user can open now that shows the field, other than {@code excludedPageKey}; or null. */
+    public SubMenuModel findPageWithField(String fieldKey, String excludedPageKey) {
+        IniFileModel ini = uiContext.iniFileState.getIniFileModel();
+        return ini == null || fieldKey == null ? null
+            : menuTree.findAvailablePageWithField(ini, fieldKey, excludedPageKey);
     }
 
     public void selectSubMenu(String subMenuKey) {

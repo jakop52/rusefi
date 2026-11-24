@@ -130,7 +130,7 @@ void InjectionEvent::onTriggerTooth(efitick_t nowNt, float currentPhase, float n
 	// Durations under 50us-ish aren't safe for the scheduler
 	// as their order may be swapped, resulting in a stuck open injector
 	// see https://github.com/rusefi/rusefi/pull/596 for more details
-	if (injectionDurationStage1 < 0.050f)
+	if (injectionDurationStage1 < MIN_INJECTION_DURATION_MS)
 	{
 		// Zero duration means zero commanded fuel mass - an intentional "no injection"
 		// (deceleration fuel cut-off, zero-fuel transients), not a misconfiguration.
@@ -163,17 +163,23 @@ void InjectionEvent::onTriggerTooth(efitick_t nowNt, float currentPhase, float n
 		angleFromNow += getEngineState()->engineCycle;
 	}
 
-	// Schedule opening (stage 1 + stage 2 open together)
-	efitick_t startTime = scheduleByAngle(nullptr, nowNt, angleFromNow, action_s::make<startInjection>(ctx.raw));
+	// Opening (stage 1 + stage 2 open together), closing stage 1, and closing stage 2 if applicable.
+	// These are scheduled all together or not at all: an opening without its closing would leave the
+	// injector open. [tag:scheduling_pool_exhaustion]
+	efitick_t startTime = getTimeAfterAngle(nowNt, angleFromNow);
 
-	// Schedule closing stage 1
-	efitick_t turnOffTimeStage1 = startTime + US2NT((int)durationUsStage1);
-	getScheduler()->schedule("inj", nullptr, turnOffTimeStage1, action_s::make<endInjection>(ctx.raw));
+	TimedAction actions[3] = {
+			{startTime, action_s::make<startInjection>(ctx.raw)},
+			{startTime + US2NT((int)durationUsStage1), action_s::make<endInjection>(ctx.raw)},
+	};
+	size_t actionCount = 2;
 
-	// Schedule closing stage 2 (if applicable)
 	if (hasStage2Injection) {
-		efitick_t turnOffTimeStage2 = startTime + US2NT((int)durationUsStage2);
-		getScheduler()->schedule("inj stage 2", nullptr, turnOffTimeStage2, action_s::make<endInjectionStage2>(ctx.raw));
+		actions[actionCount++] = {startTime + US2NT((int)durationUsStage2), action_s::make<endInjectionStage2>(ctx.raw)};
+	}
+
+	if (!getScheduler()->scheduleTogether("inj", actions, actionCount)) {
+		return;
 	}
 
 #if EFI_DETAILED_LOGGING

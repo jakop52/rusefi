@@ -74,6 +74,7 @@ TESTS_SRC_CPP = \
 	tests/trigger/test_injection_scheduling.cpp \
 	tests/trigger/test_instant_rpm.cpp \
 	tests/trigger/test_teeth_to_logicdata.cpp \
+	tests/test_sd_log_file_extension.cpp \
 	tests/trigger/test_logicdata_to_csv.cpp \
 	tests/sent/test_sent.cpp \
 	tests/ignition_injection/injection_mode_transition.cpp \
@@ -83,6 +84,7 @@ TESTS_SRC_CPP = \
 	tests/ignition_injection/test_hd_cranking.cpp \
 	tests/ignition_injection/test_hd_cranking2.cpp \
 	tests/ignition_injection/test_ignition_scheduling.cpp \
+	tests/ignition_injection/test_spark_outputs.cpp \
 	tests/ignition_injection/test_burst_knock.cpp \
 	tests/ignition_injection/test_wot_enrichment.cpp \
 	tests/ignition_injection/test_fuelCut.cpp \
@@ -259,6 +261,7 @@ TESTS_SRC_CPP = \
 	tests/actuators/boost/test_open_loop_multipliers.cpp \
 	tests/actuators/boost/test_closed_loop_adders.cpp \
 	tests/controllers/can/test_can_rx.cpp \
+	tests/controllers/can/test_can_vss.cpp \
 	tests/controllers/can/test_can_msg_tx.cpp \
 	tests/controllers/can/test_can_serial.cpp \
 	tests/controllers/can/test_can_wideband.cpp \

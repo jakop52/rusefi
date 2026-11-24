@@ -10,6 +10,7 @@ import com.opensr5.ini.field.PcVariableArrayIniField;
 import com.rusefi.config.StringFormatter;
 import com.rusefi.core.preferences.storage.Node;
 import com.rusefi.maintenance.CalibrationsInfo;
+import com.rusefi.ui.util.WrapLayout;
 import com.rusefi.ui.widgets.SegmentedControl;
 
 import javax.swing.*;
@@ -65,7 +66,27 @@ public class TuningTableView {
             super.paintComponent(g);
             paintLiveMarker(g);
         }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            // Columns stretch to fill a wide window, but never below their minimum widths
+            // (fitColumnWidths): a narrower window scrolls the grid sideways instead of
+            // squeezing every value to "...".
+            return getAutoResizeMode() != AUTO_RESIZE_OFF
+                && (!(getParent() instanceof JViewport) || getParent().getWidth() >= minimumGridWidth());
+        }
+
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            // [tag:table_window_fit] As tall as the rows: JTable asks for 400 px whatever its row
+            // count, which left an empty band inside the grid's frame once windows fit their content.
+            return new Dimension(super.getPreferredScrollableViewportSize().width, getRowCount() * getRowHeight());
+        }
     };
+    /** Space around a cell's text, so values do not touch the grid lines. */
+    private static final int CELL_TEXT_PADDING = 8;
+    /** A column never needs more room than this to stay readable. */
+    private static final int MAX_COLUMN_MIN_WIDTH = 90;
     private static final int LIVE_DOT_RADIUS = 5;
     private static final int TRAIL_DOT_RADIUS = 3;
     /** How long earlier operating points stay on the trail, fading out. */
@@ -82,7 +103,24 @@ public class TuningTableView {
     private boolean full3D;
     private boolean previewEligible;
     private final CardLayout cardLayout = new CardLayout();
-    private final JPanel tableContainer = new JPanel(cardLayout);
+    private final JPanel tableContainer = new JPanel(cardLayout) {
+        @Override
+        public Dimension getPreferredSize() {
+            // [tag:table_window_fit] The size of the view shown: CardLayout asks for the largest
+            // card, so the grid would get the full 3D view's height.
+            if (isPreferredSizeSet()) {
+                return super.getPreferredSize();
+            }
+            for (Component card : getComponents()) {
+                if (card.isVisible()) {
+                    Dimension size = card.getPreferredSize();
+                    Insets insets = getInsets();
+                    return new Dimension(size.width + insets.left + insets.right, size.height + insets.top + insets.bottom);
+                }
+            }
+            return super.getPreferredSize();
+        }
+    };
     private final JPanel content = new JPanel();
     private final String title;
     private double minValue = Double.MAX_VALUE;
@@ -112,8 +150,17 @@ public class TuningTableView {
     private final JLabel unburnedCountLabel = UnburnedCellMark.createCountLabel();
     private final JToggleButton tableSegment = SegmentedControl.segment("Table");
     private final JToggleButton surfaceSegment = SegmentedControl.segment("3D");
+    /**
+     * The grid with a small 3D preview below it. Tables open on "Table": the preview made table
+     * windows tall enough to hide the gauges. Choosing "Table" or "Both" is one choice for every
+     * table, kept with the orientation settings; "3D" is a look and is not remembered.
+     * [tag:table_window_fit] Detached windows fit their height to the content without the preview.
+     */
+    private final JToggleButton bothSegment = SegmentedControl.segment("Both");
+    static final String PREVIEW_PROPERTY = "mini_3d_preview";
+    private boolean previewOn;
     /** Grid editing buttons; disabled while the 3D view replaces the grid. */
-    private final JPanel editControls = new JPanel(new FlowLayout(FlowLayout.LEFT, TOOLBAR_GAP, 0));
+    private final java.util.List<Component> editControls = new java.util.ArrayList<>();
 
     public TuningTableView(String title) {
         this(title, false);
@@ -199,16 +246,20 @@ public class TuningTableView {
         tableContainer.add(gridPanel, "table");
         tableContainer.add(surface3DView, "3d");
 
-        // The 3D view replaces the grid, so the switch shows both choices rather than a checkbox
+        // One switch for the three views rather than a checkbox per view
         tableSegment.setToolTipText("Edit the values in a grid");
-        surfaceSegment.setToolTipText("Show the table as a 3D surface - drag to rotate");
+        bothSegment.setToolTipText("Edit the values in a grid, with a small 3D preview below it");
+        surfaceSegment.setToolTipText("Show the table as a large 3D surface - drag to rotate");
         ButtonGroup viewGroup = new ButtonGroup();
         viewGroup.add(tableSegment);
+        viewGroup.add(bothSegment);
         viewGroup.add(surfaceSegment);
-        tableSegment.setSelected(true);
-        tableSegment.addActionListener(e -> show3D(false));
+        previewOn = orientationConfig.getBoolProperty(PREVIEW_PROPERTY);
+        (previewOn ? bothSegment : tableSegment).setSelected(true);
+        tableSegment.addActionListener(e -> showGrid(false));
+        bothSegment.addActionListener(e -> showGrid(true));
         surfaceSegment.addActionListener(e -> show3D(true));
-        SegmentedControl viewSwitch = new SegmentedControl(tableSegment, surfaceSegment);
+        SegmentedControl viewSwitch = new SegmentedControl(tableSegment, bothSegment, surfaceSegment);
         viewSwitch.setMaximumSize(viewSwitch.getPreferredSize());
 
         JTextField deltaField = new JTextField("0.5", 5);
@@ -257,7 +308,8 @@ public class TuningTableView {
         interpolateButton.setToolTipText("Interpolate selected cells - Key: /");
         smoothButton.setToolTipText("Smooth selected cells - Key: S");
 
-        editControls.add(new JLabel("delta:"));
+        JLabel deltaLabel = new JLabel("delta:");
+        editControls.add(deltaLabel);
         editControls.add(deltaField);
         editControls.add(upButton);
         editControls.add(downButton);
@@ -267,19 +319,23 @@ public class TuningTableView {
         editControls.add(interpolateButton);
         editControls.add(smoothButton);
 
-        JPanel topPanel = new JPanel();
-        topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.X_AXIS));
+        // Wraps onto further lines in a narrow window rather than squeezing or cutting off controls.
+        JPanel topPanel = new JPanel(new WrapLayout(FlowLayout.LEFT, TOOLBAR_GAP, 4));
         topPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        topPanel.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        topPanel.setBorder(BorderFactory.createEmptyBorder(0, 2, 0, 2));
         topPanel.add(new JLabel(title));
-        topPanel.add(Box.createHorizontalStrut(10));
         topPanel.add(viewSwitch);
-        topPanel.add(Box.createHorizontalStrut(10));
         topPanel.add(unburnedCountLabel);
 
         if (!viewMode) {
-            topPanel.add(Box.createHorizontalStrut(10));
-            topPanel.add(editControls);
+            // The label and its field wrap together.
+            JPanel delta = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+            delta.add(deltaLabel);
+            delta.add(deltaField);
+            topPanel.add(delta);
+            for (Component control : editControls.subList(2, editControls.size())) {
+                topPanel.add(control);
+            }
 
             InputMap inputMap = content.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT);
             inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_H, 0), "interpolateHorizontal");
@@ -515,7 +571,9 @@ public class TuningTableView {
         // Keep the grid usable in small dialogs. Large tables can scroll above the preview.
         Insets border = tableScrollPane.getInsets();
         int gridHeight = Math.min(320, table.getRowCount() * table.getRowHeight())
-            + table.getTableHeader().getPreferredSize().height + border.top + border.bottom;
+            + table.getTableHeader().getPreferredSize().height + border.top + border.bottom
+            + (table.getScrollableTracksViewportWidth() ? 0
+                : tableScrollPane.getHorizontalScrollBar().getPreferredSize().height);
         int availableHeight = tableContainer.getHeight();
         JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, tableContainer);
         if (viewport != null) {
@@ -527,7 +585,8 @@ public class TuningTableView {
         // A scrollable dialog keeps a short preview and scrolls to it; elsewhere it hides when it
         // does not fit below the table.
         boolean fits = viewport != null || availableHeight >= gridHeight + MIN_PREVIEW_HEIGHT;
-        boolean visible = previewEligible && !full3D && tableContainer.getWidth() >= 320 && fits;
+        boolean visible = previewOn && previewEligible && !full3D
+            && tableContainer.getWidth() >= 320 && fits;
         boolean sizeChanged = false;
         if (visible) {
             int previewHeight = Math.max(MIN_PREVIEW_HEIGHT, availableHeight - gridHeight);
@@ -1029,12 +1088,24 @@ public class TuningTableView {
      */
     public void show3D(boolean show) {
         full3D = show;
-        (show ? surfaceSegment : tableSegment).setSelected(true);
+        (show ? surfaceSegment : previewOn ? bothSegment : tableSegment).setSelected(true);
         cardLayout.show(tableContainer, show ? "3d" : "table");
-        for (Component control : editControls.getComponents()) {
+        for (Component control : editControls) {
             control.setEnabled(!show);
         }
         updatePreviewVisibility();
+    }
+
+    /** "Table" or "Both": the grid, without or with the preview; the choice is remembered. */
+    private void showGrid(boolean preview) {
+        boolean changed = preview != previewOn;
+        previewOn = preview;
+        show3D(false);
+        if (changed) {
+            orientationConfig.setBoolProperty(PREVIEW_PROPERTY, preview);
+            // Other open tables follow, and the window fits the new height.
+            onOrientationChange.run();
+        }
     }
 
     boolean is3DShown() {
@@ -1299,6 +1370,7 @@ public class TuningTableView {
         bins[index] = encoded;
         if (xAxis) {
             table.getColumnModel().getColumn(index + 1).setHeaderValue(model.getColumnName(index + 1));
+            fitColumnWidths();
             table.getTableHeader().repaint();
         } else {
             model.fireTableCellUpdated(model.data.length - 1 - index, 0);
@@ -1636,6 +1708,8 @@ public class TuningTableView {
         surface3DView.setAxisTitles(xLabel, yLabel, zLabel);
         mini3DView.setAxisTitles(xLabel, yLabel, zLabel);
         table.setModel(model);
+        model.addTableModelListener(e -> fitColumnWidths());
+        fitColumnWidths();
         table.clearSelection();
         updateSurfaceSelection();
         updateSurfaces(dataValues, xBins, yBins);
@@ -1667,6 +1741,44 @@ public class TuningTableView {
         UnburnedChanges axes = UnburnedChanges.of(axisImageTarget, burned);
         return values.countChangedCells(zBinsField) + axes.countChangedCells(xBinsField)
             + axes.countChangedCells(yBinsField);
+    }
+
+    /**
+     * Gives every column the width of its widest value or axis label as a minimum. The grid
+     * stretches beyond that in wide windows and scrolls sideways in narrow ones.
+     */
+    private void fitColumnWidths() {
+        FontMetrics values = table.getFontMetrics(table.getFont());
+        JTableHeader header = table.getTableHeader();
+        FontMetrics labels = header.getFontMetrics(header.getFont());
+        javax.swing.table.TableColumnModel columns = table.getColumnModel();
+        for (int column = 0; column < columns.getColumnCount(); column++) {
+            javax.swing.table.TableColumn tableColumn = columns.getColumn(column);
+            int textWidth = labels.stringWidth(String.valueOf(tableColumn.getHeaderValue()));
+            for (int row = 0; row < table.getRowCount(); row++) {
+                textWidth = Math.max(textWidth, values.stringWidth(String.valueOf(table.getValueAt(row, column))));
+            }
+            int width = Math.min(MAX_COLUMN_MIN_WIDTH, textWidth + CELL_TEXT_PADDING);
+            if (tableColumn.getMinWidth() != width || tableColumn.getPreferredWidth() != width) {
+                tableColumn.setMinWidth(width);
+                // Without stretching, the grid is exactly as wide as its minimum.
+                tableColumn.setPreferredWidth(width);
+            }
+        }
+        table.revalidate();
+    }
+
+    private int minimumGridWidth() {
+        int width = 0;
+        javax.swing.table.TableColumnModel columns = table.getColumnModel();
+        for (int column = 0; column < columns.getColumnCount(); column++) {
+            width += columns.getColumn(column).getMinWidth();
+        }
+        return width;
+    }
+
+    JTable getTableForTests() {
+        return table;
     }
 
     JLabel getUnburnedCountLabelForTests() {

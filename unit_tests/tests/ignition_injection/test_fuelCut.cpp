@@ -8,6 +8,8 @@
 #include "pch.h"
 
 #include "event_queue.h"
+#include "fuel_schedule.h"
+#include "dfco.h"
 #include "engine_state_machine.h"
 #include "tunerstudio.h"
 
@@ -566,3 +568,105 @@ TEST(fuelCut, requiresGear) {
 }
 
 #endif
+
+// After fuel is restored, timing is ramped back over "After cut timing ramp-in time". The ramp
+// used to be a fixed 0.5 s, with the setting only choosing where it was chopped off.
+static void checkDfcoTimingRamp(float rampInTime) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	EXPECT_CALL(*eth.mockAirmass, getAirmass(_, _))
+		.WillRepeatedly(Return(AirmassResult{0.1008f, 50.0f}));
+
+	engineConfiguration->coastingFuelCutEnabled = true;
+	engineConfiguration->coastingFuelCutRpmLow = 1300;
+	engineConfiguration->coastingFuelCutRpmHigh = 1500;
+	engineConfiguration->coastingFuelCutTps = 2;
+	engineConfiguration->coastingFuelCutClt = 30;
+	engineConfiguration->coastingFuelCutMap = 100;
+	engineConfiguration->cranking.rpm = 999;
+	engineConfiguration->dfcoRetardDeg = 10;
+	engineConfiguration->dfcoRetardRampInTime = rampInTime;
+
+	setupSimpleTestEngineWithMafAndTT_ONE_trigger(&eth);
+	Sensor::setMockValue(SensorType::Map, 0);
+	Sensor::setMockValue(SensorType::Clt, 80);
+	Sensor::setMockValue(SensorType::Rpm, 2000);
+	auto& dfco = engine->module<DfcoController>().unmock();
+
+	// lift off: fuel cut, full retard
+	Sensor::setMockValue(SensorType::DriverThrottleIntent, 0);
+	eth.moveTimeForwardUs(1000);
+	engine->periodicFastCallback();
+	ASSERT_TRUE(dfco.cutFuel());
+	EXPECT_FLOAT_EQ(10, dfco.getTimingRetard());
+
+	// back on the throttle
+	Sensor::setMockValue(SensorType::DriverThrottleIntent, 60);
+	engine->periodicFastCallback();
+	ASSERT_FALSE(dfco.cutFuel());
+
+	const int quarterUs = static_cast<int>(rampInTime * 250'000);
+
+	eth.moveTimeForwardUs(quarterUs);
+	EXPECT_NEAR(7.5, dfco.getTimingRetard(), 0.05);
+
+	eth.moveTimeForwardUs(quarterUs);
+	EXPECT_NEAR(5, dfco.getTimingRetard(), 0.05);
+
+	eth.moveTimeForwardUs(quarterUs);
+	EXPECT_NEAR(2.5, dfco.getTimingRetard(), 0.05);
+
+	// ramp complete
+	eth.moveTimeForwardUs(quarterUs + 1000);
+	EXPECT_FLOAT_EQ(0, dfco.getTimingRetard());
+}
+
+TEST(fuelCut, dfcoTimingRampLongerThanHalfSecond) {
+	checkDfcoTimingRamp(1.0f);
+}
+
+TEST(fuelCut, dfcoTimingRampShorterThanHalfSecond) {
+	checkDfcoTimingRamp(0.2f);
+}
+
+// In End (or Center) of injection timing the start angle is the table angle minus the pulse
+// length. With no fuel commanded, as during decel fuel cut, an event which refreshes its angle
+// keeps the angle of the last real pulse: working it out for a pulse of no length made the first
+// pulse after the cut start and end a whole pulse late.
+TEST(fuelCut, injectionAngleKeptDuringFuelCut) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	EXPECT_CALL(*eth.mockAirmass, getAirmass(_, _))
+		.WillRepeatedly(Return(AirmassResult{0.1008f, 50.0f}));
+	setupSimpleTestEngineWithMafAndTT_ONE_trigger(&eth, IM_SEQUENTIAL);
+	engineConfiguration->injectionTimingMode = InjectionTimingMode::End;
+
+	engine->rpmCalculator.setRpmValue(2000);
+	engine->periodicFastCallback();
+
+	FuelSchedule dut;
+	// 5 ms at 2000 RPM is 60 degrees
+	engine->engineState.injectionDuration = 5;
+	dut.addFuelEvents();
+	dut.addFuelEvents();
+	ASSERT_TRUE(dut.isReady);
+	float fuelingAngle = dut.elements[0].injectionStartAngle;
+
+	// fuel cut
+	engine->engineState.injectionDuration = 0;
+	dut.addFuelEvents();
+	EXPECT_FLOAT_EQ(fuelingAngle, dut.elements[0].injectionStartAngle);
+
+	// fuel is back with a shorter pulse: 2.5 ms is 30 degrees, so the start moves 30 degrees later
+	engine->engineState.injectionDuration = 2.5f;
+	dut.addFuelEvents();
+	float moved = dut.elements[0].injectionStartAngle - fuelingAngle;
+	wrapAngle(moved, "test", ObdCode::CUSTOM_ERR_6555);
+	EXPECT_NEAR(30, moved, 0.1);
+
+	// a schedule rebuilt during a cut has no earlier angle to keep and takes the uncorrected one
+	engine->engineState.injectionDuration = 0;
+	dut.invalidate();
+	dut.addFuelEvents();
+	moved = dut.elements[0].injectionStartAngle - fuelingAngle;
+	wrapAngle(moved, "test", ObdCode::CUSTOM_ERR_6555);
+	EXPECT_NEAR(60, moved, 0.1);
+}

@@ -46,7 +46,7 @@ final class ShortcutsDialog extends JDialog {
             "TUNING TABLES",
             "Focus the table with Tab or click a cell. Editing shortcuts operate on the selected data cells "
                     + "in an editable table, not on the axis column or a read-only comparison. "
-                    + "They are off while the table's 3D view is shown; switch back to Table to edit.",
+                    + "They are off while the table's 3D view is shown; switch to Table or Both to edit.",
             "H  Interpolate horizontally between the selected endpoints in each row.",
             "V  Interpolate vertically between the selected endpoints in each column.",
             "/  Interpolate the selection: horizontal for one row, vertical for one column,",
@@ -120,6 +120,7 @@ final class ShortcutsDialog extends JDialog {
             "0                  Whole log.",
             "A / B              Put measurement cursor A or B at the cursor (turns Measure on).",
             "Esc                Clear A and B; pressed again, release the highlighted trace.",
+            "                   After Show on timeline: back to the histogram or scatter plot first.",
             "The cursor set by keys stays until the mouse moves over the plots.",
             "Drag a signal or legend item onto a plot or onto + Add plot; drag a legend item back "
                     + "onto the list to remove it. Drag the gap between plots to resize them; "
@@ -133,6 +134,7 @@ final class ShortcutsDialog extends JDialog {
             "Shift+arrows       Extend the selection to a block; Shift+click does the same.",
             "Enter              Show the selected cell on the timeline (as does a double-click):",
             "                   its stays are shaded and Previous / Next step through them.",
+            "                   On the timeline, Esc goes back to the histogram (or scatter plot).",
             "Ctrl+C             Copy the selected cells (or the whole table), tab-separated, for a",
             "                   TunerStudio table; Ctrl+Shift+C copies them with their axis values.",
             "Ctrl+A             Select all cells.",
@@ -203,11 +205,13 @@ final class ShortcutsDialog extends JDialog {
             "Left / Right  Previous / next captured chart page where paging is available.",
             "Focused controls such as tables or text fields can use these keys themselves.",
             "Alt+P pauses Engine Sniffer or message panels.",
+            "Space    Pause / resume Engine Sniffer while its tab is shown (not while typing a command).",
             "On panels with the corresponding buttons: Alt+C clears "
                     + "and Alt+S saves an image. These actions depend on the active panel.",
             "",
             "MENUS AND DIALOGS",
-            "Alt+F  File menu; then L loads a tune, S saves a tune, X exits.",
+            "Alt+F  File menu; then L loads a tune, S saves a tune, C creates a restore point,",
+            "       R opens Restore Points (Esc closes it), X exits.",
             "Alt+A  Actions menu.",
             "Alt+B  Binary Logging menu.",
             "Alt+T  Tools menu; then M opens Messages, E opens Engine Sniffer.",

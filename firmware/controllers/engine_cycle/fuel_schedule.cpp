@@ -6,6 +6,8 @@
 
 #include "pch.h"
 
+// A fatal cut blocks new scheduling, not an already queued pulse. Its open
+// and close times were scheduled together; this callback doesn't use the tune.
 void startInjection(scheduler_arg_t arg) {
 	const InjectorContext ctx(arg);
 	const auto nowNt = getTimeNowNt();
@@ -78,6 +80,10 @@ FuelSchedule::FuelSchedule() {
 
 void FuelSchedule::invalidate() {
 	isReady = false;
+
+	for (auto& element : elements) {
+		element.forgetStartAngle();
+	}
 }
 
 // Determines how much to adjust injection opening angle based on the injection's duration and the current phasing mode
@@ -159,8 +165,16 @@ bool InjectionEvent::updateInjectionAngle() {
 	if (result) {
 		// If injector duty cycle is high, lock injection SOI so that we
 		// don't miss injections at or above 100% duty
-		if (getEngineState()->shouldUpdateInjectionTiming) {
+		bool lockForHighDuty = !getEngineState()->shouldUpdateInjectionTiming;
+
+		// With no fuel (fuel cut), the angle would be worked out for a pulse of no length, so
+		// with End or Center injection timing the first pulse after the cut would end a whole
+		// (or half a) pulse late. Keep the angle from the last real pulse instead.
+		bool noFuel = getEngineState()->injectionDuration < MIN_INJECTION_DURATION_MS;
+
+		if (!m_hasStartAngle || !(lockForHighDuty || noFuel)) {
 			injectionStartAngle = result.Value;
+			m_hasStartAngle = true;
 		}
 
 		return true;
@@ -173,6 +187,10 @@ bool InjectionEvent::updateInjectionAngle() {
  * @returns false in case of error, true if success
  */
 bool InjectionEvent::update() {
+	// The cylinder this event belongs to, whichever injectors it drives: needed first, as the
+	// injection angle includes this cylinder's odd-fire offset. Also selects its fuel mass.
+	cylinderNumber = getCylinderNumberAtIndex(ownIndex);
+
 	bool updatedAngle = updateInjectionAngle();
 
 	if (!updatedAngle) {
@@ -197,8 +215,6 @@ bool InjectionEvent::update() {
 	InjectorOutputPin *output = &enginePins.injectors[injectorIndex];
 	isSimultaneous = mode == IM_SIMULTANEOUS;
 	m_injectionMode = mode;
-	// Stash the cylinder number so we can select the correct fueling bank later
-	cylinderNumber = injectorIndex;
 
 	if (!isSimultaneous && !output->isInitialized()) {
 		// todo: extract method for this index math

@@ -29,6 +29,10 @@ TEST(trigger, testNoStartUpWarnings) {
 	eth.setTriggerType(trigger_type_e::TT_TOOTHED_WHEEL);
 	ASSERT_EQ( 0,  round(Sensor::getOrZero(SensorType::Rpm))) << "testNoStartUpWarnings RPM";
 
+	// This test moves time without running scheduled events. Left queued, injection events would
+	// use up the scheduling pool, which is reported as a warning [tag:scheduling_pool_exhaustion]
+	engineConfiguration->isInjectionEnabled = false;
+
 	for (int i = 0;i < 10;i++) {
 		eth.fireRise(50);
 		eth.fireFall(50);
@@ -247,4 +251,31 @@ TEST(trigger, DoubledToothDuringRequestedStop) {
 
 TEST(trigger, DoubledToothWithoutStopRequest) {
 	checkToothTimingAfterStop(false, 0.001f, ObdCode::CUSTOM_PRIMARY_DOUBLED_EDGE);
+}
+
+// The cam decoder is fed every cam edge, also while the crank is not synchronized (cranking, or
+// resynchronizing after a crank trigger error). Dropping those edges left a hole in its pattern,
+// so it had to find its own sync again afterwards, or found a false one.
+TEST(trigger, camDecoderFedWhileCrankNotSynchronized) {
+	EngineTestHelper eth(engine_type_e::TEST_ENGINE);
+	engineConfiguration->vvtMode[0] = VVT_BOSCH_QUICK_START;
+	eth.setTriggerType(trigger_type_e::TT_TOOTHED_WHEEL_60_2);
+
+	auto& tc = engine->triggerCentral;
+	ASSERT_FALSE(tc.triggerState.getShaftSynchronized());
+	auto& camDecoder = tc.vvtState[0][0];
+	const auto camCounterBefore = tc.vvtCamCounter;
+
+	for (int i = 0; i < 12; i++) {
+		eth.moveTimeForwardUs(MS2US(10));
+		handleVvtCamSignal(i % 2 == 0 ? TriggerValue::RISE : TriggerValue::FALL, getTimeNowNt(), 0);
+	}
+
+	EXPECT_EQ(6u, tc.vvtEventRiseCounter[0]);
+	EXPECT_EQ(6u, tc.vvtEventFallCounter[0]);
+	// the cam decoder has seen the edges: it uses the rising ones, 20 ms apart
+	EXPECT_EQ(20000u, camDecoder.vvtToothDurations0);
+	// nothing which compares the cam against crank position has run
+	EXPECT_EQ(camCounterBefore, tc.vvtCamCounter);
+	EXPECT_FALSE(tc.triggerState.hasSynchronizedPhase() && tc.triggerState.getShaftSynchronized());
 }
